@@ -357,5 +357,47 @@ router.get('/api/admin/config', (req, res) => {
   }
 });
 
+// ==================== 系统设置 ====================
+
+// 获取系统设置
+router.get('/api/admin/settings', (req, res) => {
+  try {
+    const config = getConfig();
+    res.json({ 
+      blockClaudeCode: config.blockClaudeCode || false
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 更新系统设置
+router.put('/api/admin/settings', async (req, res) => {
+  try {
+    const { blockClaudeCode } = req.body;
+    
+    // 读取当前配置
+    const fs = await import('fs');
+    const configPath = './config.json';
+    const configData = await fs.promises.readFile(configPath, 'utf8');
+    const config = JSON.parse(configData);
+    
+    // 更新配置
+    if (typeof blockClaudeCode === 'boolean') {
+      config.blockClaudeCode = blockClaudeCode;
+    }
+    
+    // 保存配置
+    await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+    
+    res.json({ 
+      success: true,
+      blockClaudeCode: config.blockClaudeCode 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;
 

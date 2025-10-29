@@ -313,6 +313,9 @@ function switchTab(tabName) {
         case 'logs':
             loadErrorLogs();
             break;
+        case 'settings':
+            loadSettings();
+            break;
     }
 }
 
@@ -1256,5 +1259,70 @@ function getTimestamp() {
     const minute = String(now.getMinutes()).padStart(2, '0');
     const second = String(now.getSeconds()).padStart(2, '0');
     return `${year}${month}${day}_${hour}${minute}${second}`;
+}
+
+// ==================== 系统设置 ====================
+
+// 加载系统设置
+async function loadSettings() {
+    try {
+        const data = await apiRequest('/api/admin/settings');
+        
+        // 设置 blockClaudeCode 开关状态
+        const toggle = document.getElementById('blockClaudeCodeToggle');
+        if (toggle) {
+            toggle.checked = data.blockClaudeCode || false;
+        }
+        
+        // 显示当前状态
+        updateBlockClaudeCodeStatus(data.blockClaudeCode);
+    } catch (error) {
+        showNotification('加载设置失败: ' + error.message, 'error');
+    }
+}
+
+// 切换 Claude Code 拦截状态
+async function toggleBlockClaudeCode() {
+    const toggle = document.getElementById('blockClaudeCodeToggle');
+    const newValue = toggle.checked;
+    
+    try {
+        const data = await apiRequest('/api/admin/settings', {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                blockClaudeCode: newValue
+            })
+        });
+        
+        updateBlockClaudeCodeStatus(newValue);
+        showNotification(
+            newValue ? 'Claude Code 拦截已开启' : 'Claude Code 拦截已关闭',
+            'success'
+        );
+    } catch (error) {
+        // 回滚开关状态
+        toggle.checked = !newValue;
+        showNotification('设置失败: ' + error.message, 'error');
+    }
+}
+
+// 更新 Claude Code 拦截状态显示
+function updateBlockClaudeCodeStatus(enabled) {
+    const statusDiv = document.getElementById('blockClaudeCodeStatus');
+    const statusText = document.getElementById('blockClaudeCodeStatusText');
+    
+    if (statusDiv && statusText) {
+        statusDiv.style.display = 'block';
+        if (enabled) {
+            statusText.innerHTML = '✅ <strong>已开启</strong> - 将自动拦截 Claude Code 客户端请求，并在收到 403 错误时不会禁用 Factory Key';
+            statusText.style.color = '#38a169';
+        } else {
+            statusText.innerHTML = '⚪ <strong>已关闭</strong> - Claude Code 客户端可以正常访问，但 403 错误会导致 Factory Key 被禁用';
+            statusText.style.color = '#666';
+        }
+    }
 }
 

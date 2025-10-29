@@ -523,6 +523,56 @@
         .notification.info .notification-icon {
             color: #4299e1;
         }
+        
+        /* Toggle Switch 样式 */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+        }
+        
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #cbd5e0;
+            transition: 0.4s;
+            border-radius: 34px;
+        }
+        
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: 0.4s;
+            border-radius: 50%;
+        }
+        
+        input:checked + .slider {
+            background-color: #667eea;
+        }
+        
+        input:focus + .slider {
+            box-shadow: 0 0 1px #667eea;
+        }
+        
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
     </style>
 </head>
 <body>
@@ -544,6 +594,7 @@
             <button class="tab" onclick="switchTab('proxies')">代理配置</button>
             <button class="tab" onclick="switchTab('usage')">使用统计</button>
             <button class="tab" onclick="switchTab('logs')">日志查看</button>
+            <button class="tab" onclick="switchTab('settings')">⚙️ 系统设置</button>
             <button class="tab" onclick="switchTab('tools')">🛠️ 工具</button>
         </div>
         
@@ -610,6 +661,41 @@
                 <div id="errorLogs">
                     <div class="loading">加载中...</div>
                 </div>
+            </div>
+        </div>
+        
+        <!-- Settings -->
+        <div id="settings" class="tab-content">
+            <div class="card">
+                <h2 class="card-title">系统设置</h2>
+                
+                <!-- Claude Code 拦截设置 -->
+                <div style="padding: 20px; background: #f8f9fa; border-radius: 8px; margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h3 style="margin: 0 0 8px 0; font-size: 16px; color: #333;">
+                                🚫 Claude Code 客户端拦截
+                            </h3>
+                            <p style="margin: 0; font-size: 14px; color: #666;">
+                                开启后，将自动检测并拦截来自 Claude Code CLI 客户端的请求，
+                                <br>避免因 Claude Code 客户端导致的 Factory Key 被误禁用。
+                                <br><small style="color: #999;">（默认关闭，建议在遇到 Claude Code 403 错误时开启）</small>
+                            </p>
+                        </div>
+                        <div style="margin-left: 20px;">
+                            <label class="switch">
+                                <input type="checkbox" id="blockClaudeCodeToggle" onchange="toggleBlockClaudeCode()">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div id="blockClaudeCodeStatus" style="margin-top: 12px; padding: 8px 12px; background: white; border-radius: 4px; font-size: 13px; color: #666; display: none;">
+                        <span id="blockClaudeCodeStatusText"></span>
+                    </div>
+                </div>
+                
+                <!-- 其他设置可以在这里添加 -->
+                
             </div>
         </div>
         
