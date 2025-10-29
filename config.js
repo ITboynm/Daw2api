@@ -11,8 +11,38 @@ let config = null;
 export function loadConfig() {
   try {
     const configPath = path.join(__dirname, 'config.json');
+    const localConfigPath = path.join(__dirname, 'config.local.json');
+
+    // 先加载默认配置
     const configData = fs.readFileSync(configPath, 'utf-8');
     config = JSON.parse(configData);
+
+    // 如果存在 config.local.json，合并配置（local 配置优先）
+    if (fs.existsSync(localConfigPath)) {
+      try {
+        const localConfigData = fs.readFileSync(localConfigPath, 'utf-8');
+        const localConfig = JSON.parse(localConfigData);
+
+        // 深度合并配置
+        config = {
+          ...config,
+          ...localConfig,
+          // 特殊处理数组字段，优先使用 local 配置
+          endpoint: localConfig.endpoint || config.endpoint,
+          proxies: localConfig.proxies || config.proxies,
+          models: localConfig.models || config.models,
+          model_redirects: {
+            ...config.model_redirects,
+            ...localConfig.model_redirects
+          }
+        };
+
+        logInfo('Loaded configuration from config.local.json (overrides config.json)');
+      } catch (localError) {
+        logInfo(`Failed to load config.local.json: ${localError.message}. Using config.json only.`);
+      }
+    }
+
     return config;
   } catch (error) {
     throw new Error(`Failed to load config.json: ${error.message}`);

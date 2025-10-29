@@ -176,6 +176,50 @@ docker rm droid2api
 
 ## 持久化配置
 
+### 配置文件持久化（推荐）
+
+Daw2api 支持使用 `config.local.json` 来保存用户自定义配置，该文件不会被 Git 更新覆盖。
+
+**步骤：**
+
+1. 复制配置示例文件：
+```bash
+cp config.local.json.example config.local.json
+```
+
+2. 编辑 `config.local.json`，配置你的自定义设置：
+```json
+{
+  "admin_username": "admin",
+  "admin_password": "your_secure_password_here",
+  "proxies": [
+    {
+      "url": "http://your-proxy-address:port",
+      "username": "proxy_user",
+      "password": "proxy_pass"
+    }
+  ],
+  "blockClaudeCode": false
+}
+```
+
+3. 启动容器：
+```bash
+docker-compose up -d
+```
+
+**配置优先级：**
+- `config.local.json` 中的配置会覆盖 `config.json` 中的默认配置
+- 这样每次 `git pull` 更新代码后，你的自定义配置（密码、代理等）都不会丢失
+
+**可配置项：**
+- `admin_username` / `admin_password`: 管理员账号密码
+- `proxies`: HTTP 代理配置
+- `blockClaudeCode`: 是否阻止 Claude Code 客户端
+- 其他任何 config.json 中的配置项都可以覆盖
+
+### 数据持久化
+
 如果需要持久化刷新的 tokens：
 
 ### Docker Compose 方式

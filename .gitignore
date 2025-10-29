@@ -9,3 +9,6 @@ AGENTS.md
 data/*.json
 data/*.log
 !data/.gitkeep
+
+# 本地配置文件 - 包含用户自定义配置（代理、密码等）
+config.local.json

@@ -14,8 +14,11 @@ services:
       - DROID_REFRESH_KEY=${DROID_REFRESH_KEY}
       # 可选：如果需要修改端口，在config.json中配置
     volumes:
-      # 可选：持久化auth.json以保存刷新的tokens
+      # 持久化 auth.json 以保存刷新的 tokens
       - ./data:/app/data
+      # 持久化本地配置文件（用于保存自定义配置，如代理、密码等）
+      # 首次部署前请复制 config.local.json.example 为 config.local.json 并修改
+      - ./config.local.json:/app/config.local.json:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
