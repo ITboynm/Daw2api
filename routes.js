@@ -66,6 +66,21 @@ async function makeRequestWithRetry(endpoint, fetchOptions, proxyAgentInfo, fact
     // Success - record it
     if (response.ok && factoryKeyId) {
       factoryKeyManager.recordSuccess(factoryKeyId, proxyId);
+      return { response, shouldRetry: false };
+    }
+    
+    // Response received but not OK (4xx, 5xx)
+    if (factoryKeyId) {
+      const errorText = await response.text();
+      const error = new Error(`HTTP ${response.status}: ${errorText}`);
+      const result = factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies, response.status);
+      
+      if (result.action === 'retry_proxy') {
+        return { response, shouldRetry: true, switchProxy: result.shouldSwitchProxy };
+      } else if (result.action === 'switch_key') {
+        // Key switched, need to get new key and retry
+        return { response, shouldRetry: true, switchKey: true };
+      }
     }
     
     return { response, shouldRetry: false };
@@ -200,6 +215,18 @@ async function handleChatCompletions(req, res) {
     if (!response.ok) {
       const errorText = await response.text();
       logError(`Endpoint error: ${response.status}`, new Error(errorText));
+      
+      // 处理 Factory Key 切换逻辑（对于 401, 402, 403, 429 等错误）
+      const factoryKeyId = getCurrentFactoryKeyId();
+      if (factoryKeyId) {
+        const factoryKeyManager = getFactoryKeyManager();
+        const hasProxies = getProxyConfigs().length > 0;
+        const proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
+        const error = new Error(`HTTP ${response.status}: ${errorText}`);
+        
+        factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies, response.status);
+      }
+      
       return res.status(response.status).json({ 
         error: `Endpoint returned ${response.status}`,
         details: errorText 
@@ -453,6 +480,17 @@ async function handleDirectResponses(req, res) {
       const errorText = await response.text();
       logError(`Endpoint error: ${response.status}`, new Error(errorText));
       
+      // 处理 Factory Key 切换逻辑
+      const factoryKeyId = getCurrentFactoryKeyId();
+      if (factoryKeyId) {
+        const factoryKeyManager = getFactoryKeyManager();
+        const hasProxies = getProxyConfigs().length > 0;
+        const proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
+        const error = new Error(`HTTP ${response.status}: ${errorText}`);
+        
+        factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies, response.status);
+      }
+      
       const responseTime = Date.now() - startTime;
       trackUsage({
         apiKeyId: req.apiKeyData?.id || 'unknown',
@@ -679,6 +717,17 @@ async function handleDirectMessages(req, res) {
     if (!response.ok) {
       const errorText = await response.text();
       logError(`Endpoint error: ${response.status}`, new Error(errorText));
+      
+      // 处理 Factory Key 切换逻辑
+      const factoryKeyId = getCurrentFactoryKeyId();
+      if (factoryKeyId) {
+        const factoryKeyManager = getFactoryKeyManager();
+        const hasProxies = getProxyConfigs().length > 0;
+        const proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
+        const error = new Error(`HTTP ${response.status}: ${errorText}`);
+        
+        factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies, response.status);
+      }
       
       const responseTime = Date.now() - startTime;
       trackUsage({

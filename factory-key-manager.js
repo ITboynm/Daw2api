@@ -62,13 +62,37 @@ class FactoryKeyManager {
 
   // 记录失败请求并决定是切换代理还是切换key
   // 返回值：{ action: 'retry_proxy' | 'switch_key' | 'failed', shouldSwitchProxy: boolean }
-  recordFailure(keyId, proxyId, error, hasProxies = false) {
+  recordFailure(keyId, proxyId, error, hasProxies = false, statusCode = null) {
     const key = this.data.keys.find(k => k.id === keyId);
     if (!key) {
       return { action: 'failed', shouldSwitchProxy: false };
     }
 
     key.totalRequests++;
+    
+    // 检查是否是致命错误（应该立即禁用 Key 的错误码）
+    const FATAL_ERROR_CODES = [401, 402, 403, 429]; // 未授权、配额用完、禁止访问、限流
+    if (statusCode && FATAL_ERROR_CODES.includes(statusCode)) {
+      key.status = 'failed';
+      key.lastFailTime = new Date().toISOString();
+      if (!key.failCount) key.failCount = 0;
+      key.failCount++;
+      saveFactoryKeys(this.data);
+      
+      logError(`Factory key ${key.name || key.id} immediately disabled due to status code ${statusCode}`);
+      
+      addErrorLog({
+        type: 'factory_key_fatal_error',
+        keyId: keyId,
+        keyName: key.name,
+        statusCode: statusCode,
+        error: error?.message || String(error)
+      });
+      
+      // 切换到下一个 key
+      this.switchToNextKey();
+      return { action: 'switch_key', shouldSwitchProxy: false };
+    }
     
     // 如果没有配置代理，直接按失败次数判断
     if (!hasProxies) {
