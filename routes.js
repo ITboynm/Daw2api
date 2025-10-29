@@ -119,7 +119,14 @@ async function makeRequestWithProxyRetry(endpoint, headers, body, maxRetries = 3
           response.status
         );
 
-        // 如果是致命错误（401, 403等），不要继续重试
+        // 对于客户端错误（400, 404等），立即停止重试，换代理也没用
+        // 除了需要重试的特定错误码（401, 402, 403, 429）
+        if (response.status >= 400 && response.status < 500 && ![401, 402, 403, 429].includes(response.status)) {
+          logError(`Client error ${response.status}, stopping retries (not a proxy issue)`);
+          throw error;
+        }
+
+        // 对于认证和限流错误，也停止重试
         if ([401, 402, 403].includes(response.status)) {
           logError(`Fatal error ${response.status}, stopping retries`);
           throw error;
