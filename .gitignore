@@ -4,3 +4,8 @@ node_modules/
 .DS_Store
 *.txt
 AGENTS.md
+
+# 数据目录 - 包含敏感信息
+data/*.json
+data/*.log
+!data/.gitkeep

@@ -987,3 +987,274 @@ setInterval(() => {
     }
 }, 30000);
 
+// ========== 工具功能 ==========
+let extractedKeys = [];
+
+// 切换工具子标签
+function switchToolTab(tabName, event) {
+    // 如果没有传入 event，尝试从全局获取
+    const clickedElement = event ? event.target : window.event ? window.event.target : null;
+    
+    // 切换标签按钮状态
+    document.querySelectorAll('.tool-tab').forEach(tab => {
+        tab.classList.remove('active');
+        tab.style.background = '#f5f5f5';
+        tab.style.color = '#666';
+        tab.style.borderBottom = 'none';
+    });
+    
+    if (clickedElement) {
+        clickedElement.classList.add('active');
+        clickedElement.style.background = 'white';
+        clickedElement.style.color = '#667eea';
+        clickedElement.style.borderBottom = '2px solid #667eea';
+    }
+    
+    // 切换内容显示
+    document.querySelectorAll('.tool-content').forEach(content => {
+        content.style.display = 'none';
+    });
+    document.getElementById(tabName).style.display = 'block';
+}
+
+// 密钥提取
+function extractKeys() {
+    const inputText = document.getElementById('extractInput').value;
+    
+    if (!inputText.trim()) {
+        notifyError('请先输入文本');
+        return;
+    }
+    
+    const regex = /fk-[a-zA-Z0-9_-]+/g;
+    const keys = inputText.match(regex);
+    
+    if (keys && keys.length > 0) {
+        extractedKeys = [...new Set(keys)]; // 去重
+        displayExtractedKeys();
+        notifySuccess(`成功提取 ${extractedKeys.length} 个密钥`);
+    } else {
+        extractedKeys = [];
+        document.getElementById('extractResult').style.display = 'none';
+        notifyError('未找到任何密钥');
+    }
+}
+
+function displayExtractedKeys() {
+    const resultSection = document.getElementById('extractResult');
+    const resultBox = document.getElementById('resultBox');
+    const keyCount = document.getElementById('keyCount');
+    
+    resultSection.style.display = 'block';
+    keyCount.textContent = extractedKeys.length;
+    
+    if (extractedKeys.length > 0) {
+        resultBox.innerHTML = extractedKeys
+            .map(key => `<div style="background: white; padding: 10px 15px; margin-bottom: 8px; border-radius: 6px; font-family: 'Courier New', monospace; font-size: 13px; color: #333; border-left: 4px solid #667eea; word-break: break-all;">${escapeHtml(key)}</div>`)
+            .join('');
+    } else {
+        resultBox.innerHTML = '<div style="text-align: center; color: #999; padding: 40px 20px;">暂无结果</div>';
+    }
+}
+
+function copyKeys() {
+    if (extractedKeys.length === 0) {
+        notifyError('没有可复制的密钥');
+        return;
+    }
+    
+    const text = extractedKeys.join('\n');
+    copyToClipboard(text, '密钥已复制到剪贴板');
+}
+
+function saveKeysToFile() {
+    if (extractedKeys.length === 0) {
+        notifyError('没有可保存的密钥');
+        return;
+    }
+    
+    const text = extractedKeys.join('\n');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `factory_keys_${getTimestamp()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    notifySuccess('密钥已保存为文本文件');
+}
+
+async function batchImportKeys() {
+    if (extractedKeys.length === 0) {
+        notifyError('没有可导入的密钥');
+        return;
+    }
+    
+    if (!confirm(`确定要导入 ${extractedKeys.length} 个密钥吗？`)) {
+        return;
+    }
+    
+    try {
+        await apiRequest('/api/admin/factory-keys/batch', {
+            method: 'POST',
+            body: JSON.stringify({
+                keys: extractedKeys,
+                namePrefix: 'Key',
+                startNumber: 1
+            })
+        });
+        
+        notifySuccess(`成功导入 ${extractedKeys.length} 个密钥`);
+        loadFactoryKeys();
+        loadDashboard();
+        
+        // 清空提取结果
+        clearExtractor();
+    } catch (error) {
+        // Error already handled
+    }
+}
+
+function clearExtractor() {
+    document.getElementById('extractInput').value = '';
+    extractedKeys = [];
+    document.getElementById('extractResult').style.display = 'none';
+}
+
+// 代理转换 - 延迟绑定事件（等待 DOM 加载完成）
+setTimeout(() => {
+    const converterInput = document.getElementById('converterInput');
+    if (converterInput) {
+        converterInput.addEventListener('input', function() {
+            const lines = this.value.trim().split('\n').filter(line => line.trim() !== '');
+            document.getElementById('inputCount').textContent = lines.length;
+        });
+    }
+}, 100);
+
+function convertProxies() {
+    const input = document.getElementById('converterInput').value;
+    const lines = input.trim().split('\n').filter(line => line.trim() !== '');
+    
+    if (lines.length === 0) {
+        notifyError('请输入代理列表');
+        return;
+    }
+    
+    const proxies = [];
+    const usedNames = new Set();
+    
+    lines.forEach((line, index) => {
+        line = line.trim();
+        if (!line) return;
+        
+        const match = line.match(/^(.+):(.+)@(.+):(\d+)$/);
+        
+        if (match) {
+            const [_, username, password, host, port] = match;
+            
+            const sessidMatch = username.match(/sessid-([^-]+)/);
+            let name;
+            
+            if (sessidMatch) {
+                name = `proxy-${sessidMatch[1]}`;
+            } else {
+                name = `proxy-${index + 1}`;
+            }
+            
+            let finalName = name;
+            let counter = 1;
+            while (usedNames.has(finalName)) {
+                finalName = `${name}-${counter}`;
+                counter++;
+            }
+            usedNames.add(finalName);
+            
+            proxies.push({
+                name: finalName,
+                url: `http://${username}:${password}@${host}:${port}`
+            });
+        } else {
+            console.warn(`无法解析第 ${index + 1} 行: ${line}`);
+        }
+    });
+    
+    const output = JSON.stringify(proxies, null, 2);
+    document.getElementById('converterOutput').value = output;
+    document.getElementById('outputCount').textContent = proxies.length;
+    notifySuccess(`成功转换 ${proxies.length} 个代理`);
+}
+
+function copyConverterOutput() {
+    const output = document.getElementById('converterOutput');
+    if (!output.value) {
+        notifyError('没有可复制的内容');
+        return;
+    }
+    copyToClipboard(output.value, '已复制到剪贴板');
+}
+
+function saveConverterToFile() {
+    const output = document.getElementById('converterOutput').value;
+    if (!output) {
+        notifyError('没有可保存的内容');
+        return;
+    }
+    
+    const blob = new Blob([output], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `proxies_${getTimestamp()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    notifySuccess('代理配置已保存为 JSON 文件');
+}
+
+function clearConverter() {
+    if (confirm('确定要清空所有内容吗？')) {
+        document.getElementById('converterInput').value = '';
+        document.getElementById('converterOutput').value = '';
+        document.getElementById('inputCount').textContent = '0';
+        document.getElementById('outputCount').textContent = '0';
+    }
+}
+
+// 辅助函数：复制到剪贴板
+function copyToClipboard(text, successMsg = '已复制到剪贴板') {
+    navigator.clipboard.writeText(text).then(() => {
+        notifySuccess(successMsg);
+    }).catch(() => {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        notifySuccess(successMsg);
+    });
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function getTimestamp() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hour = String(now.getHours()).padStart(2, '0');
+    const minute = String(now.getMinutes()).padStart(2, '0');
+    const second = String(now.getSeconds()).padStart(2, '0');
+    return `${year}${month}${day}_${hour}${minute}${second}`;
+}
+
