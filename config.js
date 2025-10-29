@@ -86,3 +86,11 @@ export function getRedirectedModelId(modelId) {
   }
   return modelId;
 }
+
+export function getAdminCredentials() {
+  const cfg = getConfig();
+  return {
+    username: process.env.ADMIN_USERNAME || cfg.admin_username || 'admin',
+    password: process.env.ADMIN_PASSWORD || cfg.admin_password || 'admin123'
+  };
+}

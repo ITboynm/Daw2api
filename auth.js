@@ -4,15 +4,16 @@ import os from 'os';
 import fetch from 'node-fetch';
 import { logDebug, logError, logInfo } from './logger.js';
 import { getNextProxyAgent } from './proxy-manager.js';
+import { getFactoryKeyManager } from './factory-key-manager.js';
 
 // State management for API key and refresh
 let currentApiKey = null;
 let currentRefreshToken = null;
 let lastRefreshTime = null;
 let clientId = null;
-let authSource = null; // 'env' or 'file' or 'factory_key' or 'client'
+let authSource = null; // 'env' or 'file' or 'factory_key' or 'factory_key_manager' or 'client'
 let authFilePath = null;
-let factoryApiKey = null; // From FACTORY_API_KEY environment variable
+let factoryApiKey = null; // From FACTORY_API_KEY environment variable (deprecated, use factory-key-manager)
 
 const REFRESH_URL = 'https://api.workos.com/user_management/authenticate';
 const REFRESH_INTERVAL_HOURS = 6; // Refresh every 6 hours
@@ -60,19 +61,28 @@ function generateClientId() {
 
 /**
  * Load auth configuration with priority system
- * Priority: FACTORY_API_KEY > refresh token mechanism > client authorization
+ * Priority: Factory Key Manager > FACTORY_API_KEY (deprecated) > refresh token mechanism > client authorization
  */
 function loadAuthConfig() {
-  // 1. Check FACTORY_API_KEY environment variable (highest priority)
+  // 1. Check Factory Key Manager (highest priority)
+  const factoryKeyManager = getFactoryKeyManager();
+  const currentKey = factoryKeyManager.getCurrentKey();
+  if (currentKey) {
+    logInfo('Using Factory Key Manager for API authentication');
+    authSource = 'factory_key_manager';
+    return { type: 'factory_key_manager', value: currentKey };
+  }
+  
+  // 2. Check FACTORY_API_KEY environment variable (deprecated, for backward compatibility)
   const factoryKey = process.env.FACTORY_API_KEY;
   if (factoryKey && factoryKey.trim() !== '') {
-    logInfo('Using fixed API key from FACTORY_API_KEY environment variable');
+    logInfo('Using fixed API key from FACTORY_API_KEY environment variable (deprecated, consider using Factory Key Manager)');
     factoryApiKey = factoryKey.trim();
     authSource = 'factory_key';
     return { type: 'factory_key', value: factoryKey.trim() };
   }
 
-  // 2. Check refresh token mechanism (DROID_REFRESH_KEY)
+  // 3. Check refresh token mechanism (DROID_REFRESH_KEY)
   const envRefreshKey = process.env.DROID_REFRESH_KEY;
   if (envRefreshKey && envRefreshKey.trim() !== '') {
     logInfo('Using refresh token from DROID_REFRESH_KEY environment variable');
@@ -81,7 +91,7 @@ function loadAuthConfig() {
     return { type: 'refresh', value: envRefreshKey.trim() };
   }
 
-  // 3. Check ~/.factory/auth.json
+  // 4. Check ~/.factory/auth.json
   const homeDir = os.homedir();
   const factoryAuthPath = path.join(homeDir, '.factory', 'auth.json');
   
@@ -107,7 +117,7 @@ function loadAuthConfig() {
     logError('Error reading ~/.factory/auth.json', error);
   }
 
-  // 4. No configured auth found - will use client authorization
+  // 5. No configured auth found - will use client authorization
   logInfo('No auth configuration found, will use client authorization headers');
   authSource = 'client';
   return { type: 'client', value: null };
@@ -240,9 +250,12 @@ export async function initializeAuth() {
   try {
     const authConfig = loadAuthConfig();
     
-    if (authConfig.type === 'factory_key') {
-      // Using fixed FACTORY_API_KEY, no refresh needed
-      logInfo('Auth system initialized with fixed API key');
+    if (authConfig.type === 'factory_key_manager') {
+      // Using Factory Key Manager
+      logInfo('Auth system initialized with Factory Key Manager');
+    } else if (authConfig.type === 'factory_key') {
+      // Using fixed FACTORY_API_KEY (deprecated)
+      logInfo('Auth system initialized with fixed API key (deprecated)');
     } else if (authConfig.type === 'refresh') {
       // Using refresh token mechanism
       currentRefreshToken = authConfig.value;
@@ -265,14 +278,25 @@ export async function initializeAuth() {
 /**
  * Get API key based on configured authorization method
  * @param {string} clientAuthorization - Authorization header from client request (optional)
+ * @returns {Promise<string>} Bearer token
  */
 export async function getApiKey(clientAuthorization = null) {
-  // Priority 1: FACTORY_API_KEY environment variable
+  // Priority 1: Factory Key Manager
+  if (authSource === 'factory_key_manager') {
+    const factoryKeyManager = getFactoryKeyManager();
+    const currentKey = factoryKeyManager.getCurrentKey();
+    if (currentKey) {
+      return `Bearer ${currentKey.key}`;
+    }
+    throw new Error('No active factory key available from Factory Key Manager');
+  }
+  
+  // Priority 2: FACTORY_API_KEY environment variable (deprecated)
   if (authSource === 'factory_key' && factoryApiKey) {
     return `Bearer ${factoryApiKey}`;
   }
   
-  // Priority 2: Refresh token mechanism
+  // Priority 3: Refresh token mechanism
   if (authSource === 'env' || authSource === 'file') {
     // Check if we need to refresh
     if (shouldRefresh()) {
@@ -287,12 +311,25 @@ export async function getApiKey(clientAuthorization = null) {
     return `Bearer ${currentApiKey}`;
   }
   
-  // Priority 3: Client authorization header
+  // Priority 4: Client authorization header
   if (clientAuthorization) {
     logDebug('Using client authorization header');
     return clientAuthorization;
   }
   
   // No authorization available
-  throw new Error('No authorization available. Please configure FACTORY_API_KEY, refresh token, or provide client authorization.');
+  throw new Error('No authorization available. Please configure Factory Keys, FACTORY_API_KEY, refresh token, or provide client authorization.');
+}
+
+/**
+ * Get current Factory Key ID (for tracking purposes)
+ * @returns {string|null} Current factory key ID
+ */
+export function getCurrentFactoryKeyId() {
+  if (authSource === 'factory_key_manager') {
+    const factoryKeyManager = getFactoryKeyManager();
+    const currentKey = factoryKeyManager.getCurrentKey();
+    return currentKey?.id || null;
+  }
+  return null;
 }

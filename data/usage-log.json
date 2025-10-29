@@ -1,0 +1,30 @@
+[
+  {
+    "apiKeyId": "1761720662212",
+    "apiKeyName": "11",
+    "model": "claude-sonnet-4-5-20250929",
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalTokens": 0,
+    "cost": 0,
+    "endpoint": "/v1/chat/completions",
+    "responseTime": 7898,
+    "success": true,
+    "error": null,
+    "timestamp": "2025-10-29T07:12:34.942Z"
+  },
+  {
+    "apiKeyId": "1761720662212",
+    "apiKeyName": "11",
+    "model": "claude-sonnet-4-5-20250929",
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalTokens": 0,
+    "cost": 0,
+    "endpoint": "/v1/chat/completions",
+    "responseTime": 10764,
+    "success": true,
+    "error": null,
+    "timestamp": "2025-10-29T07:13:02.463Z"
+  }
+]

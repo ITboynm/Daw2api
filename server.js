@@ -1,8 +1,14 @@
 import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { loadConfig, isDevMode, getPort } from './config.js';
 import { logInfo, logError } from './logger.js';
 import router from './routes.js';
+import adminRouter from './admin-routes.js';
 import { initializeAuth } from './auth.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 
@@ -20,13 +26,43 @@ app.use((req, res, next) => {
   next();
 });
 
+// 登录页面（不需要认证）
+app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+// 管理后台主页（需要检查登录状态）
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// 静态文件服务
+app.use(express.static(path.join(__dirname, 'public')));
+
+// 管理后台 API 路由
+app.use(adminRouter);
+
+// API 路由
 app.use(router);
 
 app.get('/', (req, res) => {
+  // 检查是否有有效的 API Key
+  const authHeader = req.headers.authorization || req.headers['x-api-key'];
+  
+  if (!authHeader) {
+    return res.status(401).json({
+      error: 'Unauthorized',
+      message: 'No valid token provided. API Key required.',
+      code: 'MISSING_API_KEY'
+    });
+  }
+  
+  // 简单验证（实际验证在各个路由的中间件中）
   res.json({
-    name: 'droid2api',
-    version: '1.0.0',
+    name: 'Daw2api',
+    version: '2.0.0',
     description: 'OpenAI Compatible API Proxy',
+    status: 'running',
     endpoints: [
       'GET /v1/models',
       'POST /v1/chat/completions',
@@ -122,12 +158,25 @@ app.use((err, req, res, next) => {
   const server = app.listen(PORT)
     .on('listening', () => {
       logInfo(`Server running on http://localhost:${PORT}`);
-      logInfo('Available endpoints:');
+      logInfo('');
+      logInfo('='.repeat(60));
+      logInfo('🚀 Daw2api v2.0 - Multi-Key Management API Proxy');
+      logInfo('='.repeat(60));
+      logInfo('');
+      logInfo('📡 API Endpoints:');
       logInfo('  GET  /v1/models');
       logInfo('  POST /v1/chat/completions');
       logInfo('  POST /v1/responses');
       logInfo('  POST /v1/messages');
       logInfo('  POST /v1/messages/count_tokens');
+      logInfo('');
+      logInfo('🔐 Management Dashboard:');
+      logInfo(`  http://localhost:${PORT}/admin`);
+      logInfo(`  默认账号: admin / admin123`);
+      logInfo('  ⚠️  请及时修改默认密码！');
+      logInfo('');
+      logInfo('⚡ Note: All API endpoints require authentication');
+      logInfo('='.repeat(60));
     })
     .on('error', (err) => {
       if (err.code === 'EADDRINUSE') {

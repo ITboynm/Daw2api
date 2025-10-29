@@ -1,16 +1,20 @@
 {
-  "name": "droid2api",
-  "version": "1.3.5",
-  "description": "OpenAI Compatible API Proxy",
+  "name": "daw2api",
+  "version": "2.0.0",
+  "description": "Daw2api - Enhanced version of droid2api with multi-key management, usage tracking and web admin panel",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
   },
-  "keywords": ["openai", "api", "proxy"],
-  "author": "",
+  "keywords": ["openai", "api", "proxy", "multi-key", "admin", "droid2api", "daw2api"],
+  "author": "ITboynm",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ITboynm/Daw2api.git"
+  },
   "dependencies": {
     "express": "^4.18.2",
     "https-proxy-agent": "^7.0.2",

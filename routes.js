@@ -1,14 +1,18 @@
 import express from 'express';
 import fetch from 'node-fetch';
-import { getConfig, getModelById, getEndpointByType, getSystemPrompt, getModelReasoning, getRedirectedModelId } from './config.js';
+import { getConfig, getModelById, getEndpointByType, getSystemPrompt, getModelReasoning, getRedirectedModelId, getProxyConfigs } from './config.js';
 import { logInfo, logDebug, logError, logRequest, logResponse } from './logger.js';
 import { transformToAnthropic, getAnthropicHeaders } from './transformers/request-anthropic.js';
 import { transformToOpenAI, getOpenAIHeaders } from './transformers/request-openai.js';
 import { transformToCommon, getCommonHeaders } from './transformers/request-common.js';
 import { AnthropicResponseTransformer } from './transformers/response-anthropic.js';
 import { OpenAIResponseTransformer } from './transformers/response-openai.js';
-import { getApiKey } from './auth.js';
+import { getApiKey, getCurrentFactoryKeyId } from './auth.js';
 import { getNextProxyAgent } from './proxy-manager.js';
+import { apiKeyAuth } from './api-key-auth.js';
+import { trackUsage } from './usage-tracker.js';
+import { getFactoryKeyManager } from './factory-key-manager.js';
+import { addErrorLog } from './data-store.js';
 
 const router = express.Router();
 
@@ -50,7 +54,39 @@ function convertResponseToChatCompletion(resp) {
   return chatCompletion;
 }
 
-router.get('/v1/models', (req, res) => {
+// Helper function to make request with factory key retry logic
+async function makeRequestWithRetry(endpoint, fetchOptions, proxyAgentInfo, factoryKeyId) {
+  const factoryKeyManager = getFactoryKeyManager();
+  const hasProxies = getProxyConfigs().length > 0;
+  const proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
+  
+  try {
+    const response = await fetch(endpoint, fetchOptions);
+    
+    // Success - record it
+    if (response.ok && factoryKeyId) {
+      factoryKeyManager.recordSuccess(factoryKeyId, proxyId);
+    }
+    
+    return { response, shouldRetry: false };
+  } catch (error) {
+    // Network error or request failed
+    if (factoryKeyId) {
+      const result = factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies);
+      
+      if (result.action === 'retry_proxy') {
+        return { error, shouldRetry: true, switchProxy: result.shouldSwitchProxy };
+      } else if (result.action === 'switch_key') {
+        // Key switched, need to get new key and retry
+        return { error, shouldRetry: true, switchKey: true };
+      }
+    }
+    
+    return { error, shouldRetry: false };
+  }
+}
+
+router.get('/v1/models', apiKeyAuth, (req, res) => {
   logInfo('GET /v1/models');
   
   try {
@@ -80,6 +116,7 @@ router.get('/v1/models', (req, res) => {
 
 // 标准 OpenAI 聊天补全处理函数（带格式转换）
 async function handleChatCompletions(req, res) {
+  const startTime = Date.now();
   logInfo('POST /v1/chat/completions');
 
   try {
@@ -184,9 +221,27 @@ async function handleChatCompletions(req, res) {
           }
           res.end();
           logInfo('Stream forwarded (common type)');
+          
+          // Track usage
+          const responseTime = Date.now() - startTime;
+          trackUsage({
+            apiKeyId: req.apiKeyData?.id || 'unknown',
+            apiKeyName: req.apiKeyData?.name || 'unknown',
+            model: modelId,
+            endpoint: req.path,
+            responseTime,
+            success: true
+          });
         } catch (streamError) {
           logError('Stream error', streamError);
           res.end();
+          
+          addErrorLog({
+            type: 'stream_error',
+            apiKeyId: req.apiKeyData?.id,
+            model: modelId,
+            error: streamError?.message || String(streamError)
+          });
         }
       } else {
         // anthropic 和 openai 类型使用 transformer
@@ -203,13 +258,53 @@ async function handleChatCompletions(req, res) {
           }
           res.end();
           logInfo('Stream completed');
+          
+          const responseTime = Date.now() - startTime;
+          trackUsage({
+            apiKeyId: req.apiKeyData?.id || 'unknown',
+            apiKeyName: req.apiKeyData?.name || 'unknown',
+            model: modelId,
+            endpoint: req.path,
+            responseTime,
+            success: true
+          });
         } catch (streamError) {
           logError('Stream error', streamError);
           res.end();
+          
+          const responseTime = Date.now() - startTime;
+          trackUsage({
+            apiKeyId: req.apiKeyData?.id || 'unknown',
+            apiKeyName: req.apiKeyData?.name || 'unknown',
+            model: modelId,
+            endpoint: req.path,
+            responseTime,
+            success: false,
+            error: streamError?.message || String(streamError)
+          });
+          
+          addErrorLog({
+            type: 'stream_error',
+            apiKeyId: req.apiKeyData?.id,
+            model: modelId,
+            error: streamError?.message || String(streamError)
+          });
         }
       }
     } else {
       const data = await response.json();
+      const responseTime = Date.now() - startTime;
+      
+      // Track usage
+      trackUsage({
+        apiKeyId: req.apiKeyData?.id || 'unknown',
+        apiKeyName: req.apiKeyData?.name || 'unknown',
+        model: modelId,
+        endpoint: req.path,
+        responseTime,
+        success: true
+      });
+      
       if (model.type === 'openai') {
         try {
           const converted = convertResponseToChatCompletion(data);
@@ -229,6 +324,25 @@ async function handleChatCompletions(req, res) {
 
   } catch (error) {
     logError('Error in /v1/chat/completions', error);
+    
+    const responseTime = Date.now() - startTime;
+    trackUsage({
+      apiKeyId: req.apiKeyData?.id || 'unknown',
+      apiKeyName: req.apiKeyData?.name || 'unknown',
+      model: req.body?.model || 'unknown',
+      endpoint: req.path,
+      responseTime,
+      success: false,
+      error: error.message
+    });
+    
+    addErrorLog({
+      type: 'request_error',
+      apiKeyId: req.apiKeyData?.id,
+      endpoint: '/v1/chat/completions',
+      error: error.message
+    });
+    
     res.status(500).json({ 
       error: 'Internal server error',
       message: error.message 
@@ -238,6 +352,7 @@ async function handleChatCompletions(req, res) {
 
 // 直接转发 OpenAI 请求（不做格式转换）
 async function handleDirectResponses(req, res) {
+  const startTime = Date.now();
   logInfo('POST /v1/responses');
 
   try {
@@ -337,6 +452,18 @@ async function handleDirectResponses(req, res) {
     if (!response.ok) {
       const errorText = await response.text();
       logError(`Endpoint error: ${response.status}`, new Error(errorText));
+      
+      const responseTime = Date.now() - startTime;
+      trackUsage({
+        apiKeyId: req.apiKeyData?.id || 'unknown',
+        apiKeyName: req.apiKeyData?.name || 'unknown',
+        model: modelId,
+        endpoint: req.path,
+        responseTime,
+        success: false,
+        error: `${response.status}: ${errorText}`
+      });
+      
       return res.status(response.status).json({ 
         error: `Endpoint returned ${response.status}`,
         details: errorText 
@@ -358,19 +485,79 @@ async function handleDirectResponses(req, res) {
         }
         res.end();
         logInfo('Stream forwarded successfully');
+        
+        // Track usage
+        const responseTime = Date.now() - startTime;
+        trackUsage({
+          apiKeyId: req.apiKeyData?.id || 'unknown',
+          apiKeyName: req.apiKeyData?.name || 'unknown',
+          model: modelId,
+          endpoint: req.path,
+          responseTime,
+          success: true
+        });
       } catch (streamError) {
         logError('Stream error', streamError);
         res.end();
+        
+        const responseTime = Date.now() - startTime;
+        trackUsage({
+          apiKeyId: req.apiKeyData?.id || 'unknown',
+          apiKeyName: req.apiKeyData?.name || 'unknown',
+          model: modelId,
+          endpoint: req.path,
+          responseTime,
+          success: false,
+          error: streamError?.message || String(streamError)
+        });
+        
+        addErrorLog({
+          type: 'stream_error',
+          apiKeyId: req.apiKeyData?.id,
+          model: modelId,
+          error: streamError?.message || String(streamError)
+        });
       }
     } else {
       // 直接转发非流式响应，不做任何转换
       const data = await response.json();
+      const responseTime = Date.now() - startTime;
+      
+      // Track usage
+      trackUsage({
+        apiKeyId: req.apiKeyData?.id || 'unknown',
+        apiKeyName: req.apiKeyData?.name || 'unknown',
+        model: modelId,
+        endpoint: req.path,
+        responseTime,
+        success: true
+      });
+      
       logResponse(200, null, data);
       res.json(data);
     }
 
   } catch (error) {
     logError('Error in /v1/responses', error);
+    
+    const responseTime = Date.now() - startTime;
+    trackUsage({
+      apiKeyId: req.apiKeyData?.id || 'unknown',
+      apiKeyName: req.apiKeyData?.name || 'unknown',
+      model: req.body?.model || 'unknown',
+      endpoint: req.path,
+      responseTime,
+      success: false,
+      error: error.message
+    });
+    
+    addErrorLog({
+      type: 'request_error',
+      apiKeyId: req.apiKeyData?.id,
+      endpoint: '/v1/responses',
+      error: error.message
+    });
+    
     res.status(500).json({ 
       error: 'Internal server error',
       message: error.message 
@@ -380,6 +567,7 @@ async function handleDirectResponses(req, res) {
 
 // 直接转发 Anthropic 请求（不做格式转换）
 async function handleDirectMessages(req, res) {
+  const startTime = Date.now();
   logInfo('POST /v1/messages');
 
   try {
@@ -491,6 +679,18 @@ async function handleDirectMessages(req, res) {
     if (!response.ok) {
       const errorText = await response.text();
       logError(`Endpoint error: ${response.status}`, new Error(errorText));
+      
+      const responseTime = Date.now() - startTime;
+      trackUsage({
+        apiKeyId: req.apiKeyData?.id || 'unknown',
+        apiKeyName: req.apiKeyData?.name || 'unknown',
+        model: modelId,
+        endpoint: req.path,
+        responseTime,
+        success: false,
+        error: `${response.status}: ${errorText}`
+      });
+      
       return res.status(response.status).json({ 
         error: `Endpoint returned ${response.status}`,
         details: errorText 
@@ -510,19 +710,79 @@ async function handleDirectMessages(req, res) {
         }
         res.end();
         logInfo('Stream forwarded successfully');
+        
+        // Track usage
+        const responseTime = Date.now() - startTime;
+        trackUsage({
+          apiKeyId: req.apiKeyData?.id || 'unknown',
+          apiKeyName: req.apiKeyData?.name || 'unknown',
+          model: modelId,
+          endpoint: req.path,
+          responseTime,
+          success: true
+        });
       } catch (streamError) {
         logError('Stream error', streamError);
         res.end();
+        
+        const responseTime = Date.now() - startTime;
+        trackUsage({
+          apiKeyId: req.apiKeyData?.id || 'unknown',
+          apiKeyName: req.apiKeyData?.name || 'unknown',
+          model: modelId,
+          endpoint: req.path,
+          responseTime,
+          success: false,
+          error: streamError?.message || String(streamError)
+        });
+        
+        addErrorLog({
+          type: 'stream_error',
+          apiKeyId: req.apiKeyData?.id,
+          model: modelId,
+          error: streamError?.message || String(streamError)
+        });
       }
     } else {
       // 直接转发非流式响应，不做任何转换
       const data = await response.json();
+      const responseTime = Date.now() - startTime;
+      
+      // Track usage
+      trackUsage({
+        apiKeyId: req.apiKeyData?.id || 'unknown',
+        apiKeyName: req.apiKeyData?.name || 'unknown',
+        model: modelId,
+        endpoint: req.path,
+        responseTime,
+        success: true
+      });
+      
       logResponse(200, null, data);
       res.json(data);
     }
 
   } catch (error) {
     logError('Error in /v1/messages', error);
+    
+    const responseTime = Date.now() - startTime;
+    trackUsage({
+      apiKeyId: req.apiKeyData?.id || 'unknown',
+      apiKeyName: req.apiKeyData?.name || 'unknown',
+      model: req.body?.model || 'unknown',
+      endpoint: req.path,
+      responseTime,
+      success: false,
+      error: error.message
+    });
+    
+    addErrorLog({
+      type: 'request_error',
+      apiKeyId: req.apiKeyData?.id,
+      endpoint: '/v1/messages',
+      error: error.message
+    });
+    
     res.status(500).json({
       error: 'Internal server error',
       message: error.message
@@ -624,10 +884,10 @@ async function handleCountTokens(req, res) {
   }
 }
 
-// 注册路由
-router.post('/v1/chat/completions', handleChatCompletions);
-router.post('/v1/responses', handleDirectResponses);
-router.post('/v1/messages', handleDirectMessages);
-router.post('/v1/messages/count_tokens', handleCountTokens);
+// 注册路由 - 添加 API Key 认证中间件
+router.post('/v1/chat/completions', apiKeyAuth, handleChatCompletions);
+router.post('/v1/responses', apiKeyAuth, handleDirectResponses);
+router.post('/v1/messages', apiKeyAuth, handleDirectMessages);
+router.post('/v1/messages/count_tokens', apiKeyAuth, handleCountTokens);
 
 export default router;

@@ -1,5 +1,7 @@
 {
   "port": 3000,
+  "admin_username": "admin",
+  "admin_password": "admin123",
   "model_redirects": {
     "claude-3-5-haiku-20241022": "claude-haiku-4-5-20251001",
     "claude-sonnet-4-5": "claude-sonnet-4-5-20250929",

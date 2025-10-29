@@ -1,4 +1,4 @@
 #!/bin/bash
 
-echo "Starting droid2api server..."
+echo "Starting Daw2api server..."
 node server.js
