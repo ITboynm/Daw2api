@@ -55,50 +55,106 @@ function convertResponseToChatCompletion(resp) {
   return chatCompletion;
 }
 
-// Helper function to make request with factory key retry logic
-async function makeRequestWithRetry(endpoint, fetchOptions, proxyAgentInfo, factoryKeyId) {
+// Helper function to make request with proxy retry logic
+async function makeRequestWithProxyRetry(endpoint, headers, body, maxRetries = 3) {
   const factoryKeyManager = getFactoryKeyManager();
-  const hasProxies = getProxyConfigs().length > 0;
-  const proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
-  
-  try {
-    const response = await fetch(endpoint, fetchOptions);
-    
-    // Success - record it
-    if (response.ok && factoryKeyId) {
-      factoryKeyManager.recordSuccess(factoryKeyId, proxyId);
-      return { response, shouldRetry: false };
+  const factoryKeyId = getCurrentFactoryKeyId();
+  const proxies = getProxyConfigs();
+  const hasProxies = proxies.length > 0;
+
+  let lastError = null;
+  let lastResponse = null;
+
+  // 如果有代理，尝试所有代理；否则只尝试一次直连
+  const attemptCount = hasProxies ? Math.min(maxRetries, proxies.length) : 1;
+
+  for (let attempt = 0; attempt < attemptCount; attempt++) {
+    let proxyAgentInfo = null;
+    let proxyId = 'direct';
+
+    // 获取代理（如果有）
+    if (hasProxies) {
+      proxyAgentInfo = getNextProxyAgent(endpoint);
+      proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
     }
-    
-    // Response received but not OK (4xx, 5xx)
-    if (factoryKeyId) {
+
+    const fetchOptions = {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    };
+
+    if (proxyAgentInfo?.agent) {
+      fetchOptions.agent = proxyAgentInfo.agent;
+    }
+
+    try {
+      logInfo(`Request attempt ${attempt + 1}/${attemptCount} using ${proxyId}`);
+      const response = await fetch(endpoint, fetchOptions);
+
+      // Success - record it and return
+      if (response.ok) {
+        if (factoryKeyId) {
+          factoryKeyManager.recordSuccess(factoryKeyId, proxyId);
+        }
+        logInfo(`Request successful with ${proxyId}`);
+        return { response, proxyAgentInfo };
+      }
+
+      // Response received but not OK (4xx, 5xx)
       const errorText = await response.text();
       const error = new Error(`HTTP ${response.status}: ${errorText}`);
-      const result = factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies, response.status);
-      
-      if (result.action === 'retry_proxy') {
-        return { response, shouldRetry: true, switchProxy: result.shouldSwitchProxy };
-      } else if (result.action === 'switch_key') {
-        // Key switched, need to get new key and retry
-        return { response, shouldRetry: true, switchKey: true };
+      lastResponse = { status: response.status, text: errorText };
+      lastError = error;
+
+      logError(`Request failed with ${proxyId}: ${response.status}`, error);
+
+      // Record failure
+      if (factoryKeyId) {
+        const result = factoryKeyManager.recordFailure(
+          factoryKeyId,
+          proxyId,
+          error,
+          hasProxies,
+          response.status
+        );
+
+        // 如果是致命错误（401, 403等），不要继续重试
+        if ([401, 402, 403].includes(response.status)) {
+          logError(`Fatal error ${response.status}, stopping retries`);
+          throw error;
+        }
+      }
+
+      // 如果还有重试机会，继续下一个代理
+      if (attempt < attemptCount - 1) {
+        logInfo(`Switching to next proxy for retry...`);
+        continue;
+      }
+    } catch (error) {
+      // Network error or request failed
+      lastError = error;
+      logError(`Network error with ${proxyId}`, error);
+
+      if (factoryKeyId) {
+        factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies);
+      }
+
+      // 如果还有重试机会，继续下一个代理
+      if (attempt < attemptCount - 1) {
+        logInfo(`Network error, switching to next proxy for retry...`);
+        continue;
       }
     }
-    
-    return { response, shouldRetry: false };
-  } catch (error) {
-    // Network error or request failed
-    if (factoryKeyId) {
-      const result = factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies);
-      
-      if (result.action === 'retry_proxy') {
-        return { error, shouldRetry: true, switchProxy: result.shouldSwitchProxy };
-      } else if (result.action === 'switch_key') {
-        // Key switched, need to get new key and retry
-        return { error, shouldRetry: true, switchKey: true };
-      }
-    }
-    
-    return { error, shouldRetry: false };
+  }
+
+  // 所有重试都失败了
+  if (lastResponse) {
+    throw new Error(`All ${attemptCount} attempts failed. Last error: HTTP ${lastResponse.status}: ${lastResponse.text}`);
+  } else if (lastError) {
+    throw lastError;
+  } else {
+    throw new Error('Request failed with unknown error');
   }
 }
 
@@ -198,18 +254,25 @@ async function handleChatCompletions(req, res) {
 
     logRequest('POST', endpoint.base_url, headers, transformedRequest);
 
-    const proxyAgentInfo = getNextProxyAgent(endpoint.base_url);
-    const fetchOptions = {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(transformedRequest)
-    };
+    // 使用带重试的请求函数
+    let response, proxyAgentInfo;
+    try {
+      const result = await makeRequestWithProxyRetry(endpoint.base_url, headers, transformedRequest);
+      response = result.response;
+      proxyAgentInfo = result.proxyAgentInfo;
+    } catch (error) {
+      // 检查是否是 Claude Code 客户端（如果启用了拦截）
+      const isClaudeCodeBlocked = shouldBlockClaudeCode(req);
+      if (isClaudeCodeBlocked) {
+        return res.status(403).json(getClaudeCodeBlockedError());
+      }
 
-    if (proxyAgentInfo?.agent) {
-      fetchOptions.agent = proxyAgentInfo.agent;
+      logError('All proxy attempts failed', error);
+      return res.status(500).json({
+        error: 'Request failed after all retries',
+        details: error.message
+      });
     }
-
-    const response = await fetch(endpoint.base_url, fetchOptions);
 
     logInfo(`Response status: ${response.status}`);
 
@@ -476,52 +539,20 @@ async function handleDirectResponses(req, res) {
 
     logRequest('POST', endpoint.base_url, headers, modifiedRequest);
 
-    // 转发修改后的请求
-    const proxyAgentInfo = getNextProxyAgent(endpoint.base_url);
-    const fetchOptions = {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(modifiedRequest)
-    };
-
-    if (proxyAgentInfo?.agent) {
-      fetchOptions.agent = proxyAgentInfo.agent;
-    }
-
-    const response = await fetch(endpoint.base_url, fetchOptions);
-
-    logInfo(`Response status: ${response.status}`);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      logError(`Endpoint error: ${response.status}`, new Error(errorText));
-      
+    // 使用带重试的请求函数
+    let response, proxyAgentInfo;
+    try {
+      const result = await makeRequestWithProxyRetry(endpoint.base_url, headers, modifiedRequest);
+      response = result.response;
+      proxyAgentInfo = result.proxyAgentInfo;
+    } catch (error) {
       // 检查是否是 Claude Code 客户端（如果启用了拦截）
       const isClaudeCodeBlocked = shouldBlockClaudeCode(req);
-      
-      // 处理 Factory Key 切换逻辑
-      const factoryKeyId = getCurrentFactoryKeyId();
-      if (factoryKeyId) {
-        const factoryKeyManager = getFactoryKeyManager();
-        const hasProxies = getProxyConfigs().length > 0;
-        const proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
-        const error = new Error(`HTTP ${response.status}: ${errorText}`);
-        
-        const result = factoryKeyManager.recordFailure(
-          factoryKeyId, 
-          proxyId, 
-          error, 
-          hasProxies, 
-          response.status,
-          isClaudeCodeBlocked
-        );
-        
-        // 如果是 Claude Code 被拦截，返回特殊错误消息
-        if (result.action === 'claude_code_blocked') {
-          return res.status(403).json(getClaudeCodeBlockedError());
-        }
+      if (isClaudeCodeBlocked) {
+        return res.status(403).json(getClaudeCodeBlockedError());
       }
-      
+
+      logError('All proxy attempts failed', error);
       const responseTime = Date.now() - startTime;
       trackUsage({
         apiKeyId: req.apiKeyData?.id || 'unknown',
@@ -530,14 +561,16 @@ async function handleDirectResponses(req, res) {
         endpoint: req.path,
         responseTime,
         success: false,
-        error: `${response.status}: ${errorText}`
+        error: error.message
       });
-      
-      return res.status(response.status).json({ 
-        error: `Endpoint returned ${response.status}`,
-        details: errorText 
+
+      return res.status(500).json({
+        error: 'Request failed after all retries',
+        details: error.message
       });
     }
+
+    logInfo(`Response status: ${response.status}`);
 
     const isStreaming = openaiRequest.stream === true;
 
@@ -729,52 +762,20 @@ async function handleDirectMessages(req, res) {
 
     logRequest('POST', endpoint.base_url, headers, modifiedRequest);
 
-    // 转发修改后的请求
-    const proxyAgentInfo = getNextProxyAgent(endpoint.base_url);
-    const fetchOptions = {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(modifiedRequest)
-    };
-
-    if (proxyAgentInfo?.agent) {
-      fetchOptions.agent = proxyAgentInfo.agent;
-    }
-
-    const response = await fetch(endpoint.base_url, fetchOptions);
-
-    logInfo(`Response status: ${response.status}`);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      logError(`Endpoint error: ${response.status}`, new Error(errorText));
-      
+    // 使用带重试的请求函数
+    let response, proxyAgentInfo;
+    try {
+      const result = await makeRequestWithProxyRetry(endpoint.base_url, headers, modifiedRequest);
+      response = result.response;
+      proxyAgentInfo = result.proxyAgentInfo;
+    } catch (error) {
       // 检查是否是 Claude Code 客户端（如果启用了拦截）
       const isClaudeCodeBlocked = shouldBlockClaudeCode(req);
-      
-      // 处理 Factory Key 切换逻辑
-      const factoryKeyId = getCurrentFactoryKeyId();
-      if (factoryKeyId) {
-        const factoryKeyManager = getFactoryKeyManager();
-        const hasProxies = getProxyConfigs().length > 0;
-        const proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
-        const error = new Error(`HTTP ${response.status}: ${errorText}`);
-        
-        const result = factoryKeyManager.recordFailure(
-          factoryKeyId, 
-          proxyId, 
-          error, 
-          hasProxies, 
-          response.status,
-          isClaudeCodeBlocked
-        );
-        
-        // 如果是 Claude Code 被拦截，返回特殊错误消息
-        if (result.action === 'claude_code_blocked') {
-          return res.status(403).json(getClaudeCodeBlockedError());
-        }
+      if (isClaudeCodeBlocked) {
+        return res.status(403).json(getClaudeCodeBlockedError());
       }
-      
+
+      logError('All proxy attempts failed', error);
       const responseTime = Date.now() - startTime;
       trackUsage({
         apiKeyId: req.apiKeyData?.id || 'unknown',
@@ -783,14 +784,16 @@ async function handleDirectMessages(req, res) {
         endpoint: req.path,
         responseTime,
         success: false,
-        error: `${response.status}: ${errorText}`
+        error: error.message
       });
-      
-      return res.status(response.status).json({ 
-        error: `Endpoint returned ${response.status}`,
-        details: errorText 
+
+      return res.status(500).json({
+        error: 'Request failed after all retries',
+        details: error.message
       });
     }
+
+    logInfo(`Response status: ${response.status}`);
 
     if (isStreaming) {
       // 直接转发流式响应，不做任何转换
