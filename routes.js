@@ -13,6 +13,7 @@ import { apiKeyAuth } from './api-key-auth.js';
 import { trackUsage } from './usage-tracker.js';
 import { getFactoryKeyManager } from './factory-key-manager.js';
 import { addErrorLog } from './data-store.js';
+import { shouldBlockClaudeCode, getClaudeCodeBlockedError } from './claude-code-detector.js';
 
 const router = express.Router();
 
@@ -216,6 +217,9 @@ async function handleChatCompletions(req, res) {
       const errorText = await response.text();
       logError(`Endpoint error: ${response.status}`, new Error(errorText));
       
+      // 检查是否是 Claude Code 客户端（如果启用了拦截）
+      const isClaudeCodeBlocked = shouldBlockClaudeCode(req);
+      
       // 处理 Factory Key 切换逻辑（对于 401, 402, 403, 429 等错误）
       const factoryKeyId = getCurrentFactoryKeyId();
       if (factoryKeyId) {
@@ -224,7 +228,19 @@ async function handleChatCompletions(req, res) {
         const proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
         const error = new Error(`HTTP ${response.status}: ${errorText}`);
         
-        factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies, response.status);
+        const result = factoryKeyManager.recordFailure(
+          factoryKeyId, 
+          proxyId, 
+          error, 
+          hasProxies, 
+          response.status,
+          isClaudeCodeBlocked
+        );
+        
+        // 如果是 Claude Code 被拦截，返回特殊错误消息
+        if (result.action === 'claude_code_blocked') {
+          return res.status(403).json(getClaudeCodeBlockedError());
+        }
       }
       
       return res.status(response.status).json({ 
@@ -480,6 +496,9 @@ async function handleDirectResponses(req, res) {
       const errorText = await response.text();
       logError(`Endpoint error: ${response.status}`, new Error(errorText));
       
+      // 检查是否是 Claude Code 客户端（如果启用了拦截）
+      const isClaudeCodeBlocked = shouldBlockClaudeCode(req);
+      
       // 处理 Factory Key 切换逻辑
       const factoryKeyId = getCurrentFactoryKeyId();
       if (factoryKeyId) {
@@ -488,7 +507,19 @@ async function handleDirectResponses(req, res) {
         const proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
         const error = new Error(`HTTP ${response.status}: ${errorText}`);
         
-        factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies, response.status);
+        const result = factoryKeyManager.recordFailure(
+          factoryKeyId, 
+          proxyId, 
+          error, 
+          hasProxies, 
+          response.status,
+          isClaudeCodeBlocked
+        );
+        
+        // 如果是 Claude Code 被拦截，返回特殊错误消息
+        if (result.action === 'claude_code_blocked') {
+          return res.status(403).json(getClaudeCodeBlockedError());
+        }
       }
       
       const responseTime = Date.now() - startTime;
@@ -718,6 +749,9 @@ async function handleDirectMessages(req, res) {
       const errorText = await response.text();
       logError(`Endpoint error: ${response.status}`, new Error(errorText));
       
+      // 检查是否是 Claude Code 客户端（如果启用了拦截）
+      const isClaudeCodeBlocked = shouldBlockClaudeCode(req);
+      
       // 处理 Factory Key 切换逻辑
       const factoryKeyId = getCurrentFactoryKeyId();
       if (factoryKeyId) {
@@ -726,7 +760,19 @@ async function handleDirectMessages(req, res) {
         const proxyId = proxyAgentInfo?.proxy?.name || proxyAgentInfo?.proxy?.url || 'direct';
         const error = new Error(`HTTP ${response.status}: ${errorText}`);
         
-        factoryKeyManager.recordFailure(factoryKeyId, proxyId, error, hasProxies, response.status);
+        const result = factoryKeyManager.recordFailure(
+          factoryKeyId, 
+          proxyId, 
+          error, 
+          hasProxies, 
+          response.status,
+          isClaudeCodeBlocked
+        );
+        
+        // 如果是 Claude Code 被拦截，返回特殊错误消息
+        if (result.action === 'claude_code_blocked') {
+          return res.status(403).json(getClaudeCodeBlockedError());
+        }
       }
       
       const responseTime = Date.now() - startTime;

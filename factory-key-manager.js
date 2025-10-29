@@ -61,14 +61,30 @@ class FactoryKeyManager {
   }
 
   // 记录失败请求并决定是切换代理还是切换key
-  // 返回值：{ action: 'retry_proxy' | 'switch_key' | 'failed', shouldSwitchProxy: boolean }
-  recordFailure(keyId, proxyId, error, hasProxies = false, statusCode = null) {
+  // 返回值：{ action: 'retry_proxy' | 'switch_key' | 'failed' | 'claude_code_blocked', shouldSwitchProxy: boolean }
+  recordFailure(keyId, proxyId, error, hasProxies = false, statusCode = null, isClaudeCode = false) {
     const key = this.data.keys.find(k => k.id === keyId);
     if (!key) {
       return { action: 'failed', shouldSwitchProxy: false };
     }
 
     key.totalRequests++;
+    
+    // 检查是否是 Claude Code 客户端导致的 403 错误
+    // 如果是，不禁用 Key，只返回特殊标记
+    if (isClaudeCode && statusCode === 403) {
+      logDebug(`Claude Code client blocked with 403, not disabling key ${key.name || key.id}`);
+      
+      addErrorLog({
+        type: 'claude_code_blocked',
+        keyId: keyId,
+        keyName: key.name,
+        statusCode: statusCode,
+        error: 'Claude Code client access blocked'
+      });
+      
+      return { action: 'claude_code_blocked', shouldSwitchProxy: false };
+    }
     
     // 检查是否是致命错误（应该立即禁用 Key 的错误码）
     const FATAL_ERROR_CODES = [401, 402, 403, 429]; // 未授权、配额用完、禁止访问、限流
